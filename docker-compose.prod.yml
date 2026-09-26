@@ -1,0 +1,46 @@
+services:
+
+  web:
+    image: jamesaws/student-registration-web:latest
+    container_name: student-web
+    ports:
+      - "80:80"
+    networks:
+      - webnet
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  app:
+    image: jamesaws/student-registration-app:latest
+    container_name: student-app
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      DB_NAME: ${DB_NAME}
+    networks:
+      - webnet
+      - dbnet
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  db:
+    image: jamesaws/student-registration-db:latest
+    container_name: student-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - dbnet
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
+
+networks:
+  webnet:
+  dbnet:
