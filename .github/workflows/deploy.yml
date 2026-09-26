@@ -42,18 +42,14 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$HOME/.ssh"
-          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > "$HOME/.ssh/ec2_key"
+
+          echo "${{ secrets.EC2_SSH_KEY_B64 }}" \
+            | base64 -d > "$HOME/.ssh/ec2_key"
+
           chmod 600 "$HOME/.ssh/ec2_key"
 
-          ssh-keygen -y -f "$HOME/.ssh/ec2_key" > /dev/null
-          echo "SSH private key is valid."
-
-      - name: Test EC2 SSH port
-        shell: bash
-        run: |
-          echo "Testing connectivity to EC2 port 22..."
-          timeout 10 bash -c 'cat < /dev/null > /dev/tcp/${{ secrets.EC2_HOST }}/22'
-          echo "EC2 port 22 is reachable."
+          echo "GitHub SSH key fingerprint:"
+          ssh-keygen -y -f "$HOME/.ssh/ec2_key" | ssh-keygen -lf -
 
       - name: Add EC2 host key
         shell: bash
@@ -63,11 +59,16 @@ jobs:
       - name: Copy production Compose file
         shell: bash
         run: |
-          ssh -i "$HOME/.ssh/ec2_key" \
+          ssh \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -i "$HOME/.ssh/ec2_key" \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
             "mkdir -p ~/Dockerized-Student-Registration-System"
 
-          scp -i "$HOME/.ssh/ec2_key" \
+          scp \
+            -o IdentitiesOnly=yes \
+            -i "$HOME/.ssh/ec2_key" \
             docker-compose.prod.yml \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/Dockerized-Student-Registration-System/docker-compose.prod.yml"
 
