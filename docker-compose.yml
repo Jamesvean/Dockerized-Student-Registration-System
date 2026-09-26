@@ -1,23 +1,23 @@
 services:
 
   web:
-    image: nginx:latest
+    build: ./web
     container_name: student-web
     ports:
       - "80:80"
-    volumes:
-      - ./web/code:/usr/share/nginx/html
-      - ./web/config:/etc/nginx/conf.d
     networks:
       - webnet
     depends_on:
       - app
 
   app:
-    image: bitnami/php-fpm:latest
+    build: ./app
     container_name: student-app
-    volumes:
-      - ./app/code:/app
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_USER: ${DB_USER}
+      DB_PASS: ${DB_PASS}
+      DB_NAME: ${DB_NAME}
     networks:
       - webnet
       - dbnet
@@ -27,6 +27,9 @@ services:
   db:
     build: ./db
     container_name: student-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
     volumes:
       - mysql_data:/var/lib/mysql
     networks:

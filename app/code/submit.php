@@ -1,9 +1,9 @@
 <?php
 
-$db_host = "db";
-$db_user = "root";
-$db_pass = "root";
-$db_name = "FCT";
+$db_host = getenv("DB_HOST") ?: "db";
+$db_user = getenv("DB_USER") ?: "root";
+$db_pass = getenv("DB_PASS");
+$db_name = getenv("DB_NAME") ?: "FCT";
 
 $conn = new mysqli($db_host, $db_user, $db_pass, $db_name);
 
