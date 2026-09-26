@@ -1,7 +1,7 @@
 services:
 
   web:
-    image: jamesaws/student-registration-web:latest
+    image: jamesaws/student-registration-web:${IMAGE_TAG:-latest}
     container_name: student-web
     ports:
       - "80:80"
@@ -18,7 +18,7 @@ services:
       start_period: 10s
 
   app:
-    image: jamesaws/student-registration-app:latest
+    image: jamesaws/student-registration-app:${IMAGE_TAG:-latest}
     container_name: student-app
     environment:
       DB_HOST: ${DB_HOST}
@@ -39,7 +39,7 @@ services:
       start_period: 10s
 
   db:
-    image: jamesaws/student-registration-db:latest
+    image: jamesaws/student-registration-db:${IMAGE_TAG:-latest}
     container_name: student-db
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}

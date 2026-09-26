@@ -3,92 +3,385 @@ name: Deploy to EC2
 on:
   workflow_run:
     workflows:
-      - "Build and Push Docker Images"
+      - Build and Push Docker Images
     types:
       - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   deploy:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main' }}
+    name: Deploy application to EC2
     runs-on: ubuntu-latest
+
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Validate EC2 secrets
         shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
         run: |
-          if [ -z "${{ secrets.EC2_HOST }}" ]; then
-            echo "ERROR: EC2_HOST is missing"
+          set -euo pipefail
+
+          if [ -z "$EC2_HOST" ]; then
+            echo "ERROR: EC2_HOST secret is missing."
             exit 1
           fi
 
-          if [ -z "${{ secrets.EC2_USER }}" ]; then
-            echo "ERROR: EC2_USER is missing"
+          if [ -z "$EC2_USER" ]; then
+            echo "ERROR: EC2_USER secret is missing."
             exit 1
           fi
 
-          if [ -z "${{ secrets.EC2_SSH_KEY }}" ]; then
-            echo "ERROR: EC2_SSH_KEY is missing"
+          if [ -z "$EC2_SSH_KEY_B64" ]; then
+            echo "ERROR: EC2_SSH_KEY_B64 secret is missing."
             exit 1
           fi
 
-          echo "EC2 deployment secrets are present."
+          echo "EC2 secrets are configured."
 
       - name: Configure SSH key
         shell: bash
+        env:
+          EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
         run: |
-          mkdir -p "$HOME/.ssh"
+          set -euo pipefail
 
-          echo "${{ secrets.EC2_SSH_KEY_B64 }}" \
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+
+          printf '%s' "$EC2_SSH_KEY_B64" \
             | base64 -d > "$HOME/.ssh/ec2_key"
 
           chmod 600 "$HOME/.ssh/ec2_key"
 
-          echo "GitHub SSH key fingerprint:"
-          ssh-keygen -y -f "$HOME/.ssh/ec2_key" | ssh-keygen -lf -
+          echo "SSH key fingerprint:"
+          ssh-keygen -y -f "$HOME/.ssh/ec2_key" \
+            | ssh-keygen -lf -
+
+      - name: Test EC2 SSH port
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+        run: |
+          set -euo pipefail
+
+          echo "Testing EC2 SSH port 22..."
+
+          if timeout 10 bash -c \
+            "cat < /dev/null > /dev/tcp/$EC2_HOST/22"; then
+            echo "EC2 SSH port 22 is reachable."
+          else
+            echo "ERROR: EC2 SSH port 22 is not reachable."
+            exit 1
+          fi
 
       - name: Add EC2 host key
         shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
         run: |
-          ssh-keyscan -T 10 -H "${{ secrets.EC2_HOST }}" >> "$HOME/.ssh/known_hosts"
+          set -euo pipefail
+
+          ssh-keyscan \
+            -T 10 \
+            -H "$EC2_HOST" \
+            >> "$HOME/.ssh/known_hosts"
+
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Test SSH authentication
+        shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          set -euo pipefail
+
+          ssh \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -i "$HOME/.ssh/ec2_key" \
+            "$EC2_USER@$EC2_HOST" \
+            'echo "SSH AUTHENTICATION SUCCESSFUL"'
 
       - name: Copy production Compose file
         shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
         run: |
+          set -euo pipefail
+
           ssh \
             -o IdentitiesOnly=yes \
             -o BatchMode=yes \
             -i "$HOME/.ssh/ec2_key" \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+            "$EC2_USER@$EC2_HOST" \
             "mkdir -p ~/Dockerized-Student-Registration-System"
 
           scp \
             -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
             -i "$HOME/.ssh/ec2_key" \
             docker-compose.prod.yml \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/Dockerized-Student-Registration-System/docker-compose.prod.yml"
+            "$EC2_USER@$EC2_HOST:~/Dockerized-Student-Registration-System/docker-compose.prod.yml"
 
-      - name: Deploy application
+      - name: Deploy application with rollback
         shell: bash
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          NEW_TAG: ${{ github.event.workflow_run.head_sha }}
         run: |
-          ssh -i "$HOME/.ssh/ec2_key" \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" <<'REMOTE'
-          set -e
+          set -euo pipefail
+
+          ssh \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -i "$HOME/.ssh/ec2_key" \
+            "$EC2_USER@$EC2_HOST" \
+            "NEW_TAG='$NEW_TAG' bash -s" <<'REMOTE'
+
+          set -euo pipefail
 
           cd ~/Dockerized-Student-Registration-System
 
-          docker compose -f docker-compose.prod.yml pull
-          docker compose -f docker-compose.prod.yml up -d --remove-orphans
+          echo "========================================"
+          echo "STUDENT REGISTRATION SYSTEM DEPLOYMENT"
+          echo "========================================"
 
-          sleep 10
+          if [ ! -f .env ]; then
+            echo "ERROR: .env file is missing on EC2."
+            exit 1
+          fi
 
-          docker compose -f docker-compose.prod.yml ps
+          if [ ! -f docker-compose.prod.yml ]; then
+            echo "ERROR: docker-compose.prod.yml is missing."
+            exit 1
+          fi
 
-          curl -fsS http://localhost/ > /dev/null
+          PREVIOUS_TAG=""
 
+          if [ -f .deployed_tag ]; then
+            PREVIOUS_TAG=$(cat .deployed_tag)
+          fi
+
+          echo ""
+          echo "New deployment:"
+          echo "$NEW_TAG"
+
+          echo ""
+          echo "Previous deployment:"
+          echo "${PREVIOUS_TAG:-none}"
+
+          echo ""
+          echo "Pulling Docker images for commit:"
+          echo "$NEW_TAG"
+
+          IMAGE_TAG="$NEW_TAG" \
+            docker compose \
+            -f docker-compose.prod.yml \
+            pull
+
+          echo ""
+          echo "Starting new application version..."
+
+          IMAGE_TAG="$NEW_TAG" \
+            docker compose \
+            -f docker-compose.prod.yml \
+            up -d --remove-orphans
+
+          echo ""
+          echo "Waiting for containers to become healthy..."
+
+          DEPLOY_OK=false
+
+          for attempt in $(seq 1 18); do
+
+            echo ""
+            echo "Health check attempt $attempt of 18"
+
+            ALL_READY=true
+
+            for container in student-web student-app student-db
+            do
+
+              STATUS=$(docker inspect \
+                --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+                "$container" 2>/dev/null || echo "missing")
+
+              echo "$container = $STATUS"
+
+              case "$STATUS" in
+                healthy|running)
+                  ;;
+                *)
+                  ALL_READY=false
+                  ;;
+              esac
+
+            done
+
+            if $ALL_READY; then
+
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                http://localhost/ \
+                > /dev/null
+              then
+
+                DEPLOY_OK=true
+                echo ""
+                echo "Application HTTP health check passed."
+                break
+
+              fi
+
+            fi
+
+            sleep 5
+
+          done
+
+          if [ "$DEPLOY_OK" != "true" ]; then
+
+            echo ""
+            echo "========================================"
+            echo "NEW DEPLOYMENT FAILED"
+            echo "========================================"
+
+            echo ""
+            echo "Container status:"
+
+            IMAGE_TAG="$NEW_TAG" \
+              docker compose \
+              -f docker-compose.prod.yml \
+              ps || true
+
+            echo ""
+            echo "Recent application logs:"
+
+            IMAGE_TAG="$NEW_TAG" \
+              docker compose \
+              -f docker-compose.prod.yml \
+              logs \
+              --tail=50 || true
+
+            if [ -n "$PREVIOUS_TAG" ]; then
+
+              echo ""
+              echo "========================================"
+              echo "ROLLING BACK"
+              echo "========================================"
+
+              echo "Restoring:"
+              echo "$PREVIOUS_TAG"
+
+              IMAGE_TAG="$PREVIOUS_TAG" \
+                docker compose \
+                -f docker-compose.prod.yml \
+                pull
+
+              IMAGE_TAG="$PREVIOUS_TAG" \
+                docker compose \
+                -f docker-compose.prod.yml \
+                up -d --remove-orphans
+
+              echo ""
+              echo "Waiting for rollback..."
+              sleep 20
+
+              if curl \
+                --fail \
+                --silent \
+                --show-error \
+                http://localhost/ \
+                > /dev/null
+              then
+
+                echo ""
+                echo "ROLLBACK SUCCESSFUL"
+
+              else
+
+                echo ""
+                echo "WARNING: Rollback HTTP health check failed."
+
+              fi
+
+            else
+
+              echo ""
+              echo "No previous SHA deployment is available."
+              echo "Automatic rollback cannot run yet."
+
+            fi
+
+            exit 1
+
+          fi
+
+          echo ""
+          echo "========================================"
           echo "DEPLOYMENT SUCCESSFUL"
+          echo "========================================"
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            printf '%s\n' "$PREVIOUS_TAG" > .previous_tag
+          fi
+
+          printf '%s\n' "$NEW_TAG" > .deployed_tag
+
+          echo ""
+          echo "Current deployed Git SHA:"
+          cat .deployed_tag
+
+          echo ""
+          echo "Container status:"
+
+          IMAGE_TAG="$NEW_TAG" \
+            docker compose \
+            -f docker-compose.prod.yml \
+            ps
+
+          echo ""
+          echo "Running Docker images:"
+
+          docker inspect \
+            student-web \
+            student-app \
+            student-db \
+            --format='{{.Name}} -> {{.Config.Image}}'
+
+          echo ""
+          echo "Final HTTP test..."
+
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            http://localhost/ \
+            > /dev/null
+
+          echo ""
+          echo "HTTP TEST PASSED"
+          echo "DEPLOYMENT COMPLETE"
+
           REMOTE
